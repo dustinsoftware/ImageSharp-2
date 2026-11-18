@@ -482,11 +482,19 @@ namespace SixLabors.ImageSharp.Metadata.Profiles.Exif
                 return;
             }
 
-            ulong size = numberOfComponents * ExifDataTypes.GetSize(dataType);
+            ulong elementSize = ExifDataTypes.GetSize(dataType);
+            if (numberOfComponents > ulong.MaxValue / elementSize)
+            {
+                this.AddInvalidTag(new UnkownExifTag(tag));
+                return;
+            }
+
+            ulong size = numberOfComponents * elementSize;
             if (size > 8)
             {
                 ulong newOffset = this.ConvertToUInt64(offsetBuffer);
-                if (newOffset > ulong.MaxValue || newOffset > ((ulong)this.data.Length - size))
+                ulong length = (ulong)this.data.Length;
+                if (size > int.MaxValue || size > length || newOffset > length - size)
                 {
                     this.AddInvalidTag(new UnkownExifTag(tag));
                     return;
