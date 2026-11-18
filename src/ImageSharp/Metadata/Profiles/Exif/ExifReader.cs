@@ -406,13 +406,13 @@ namespace SixLabors.ImageSharp.Metadata.Profiles.Exif
                 return;
             }
 
-            uint size = numberOfComponents * ExifDataTypes.GetSize(dataType);
+            ulong size = (ulong)numberOfComponents * ExifDataTypes.GetSize(dataType);
             if (size > 4)
             {
                 uint newOffset = this.ConvertToUInt32(offsetBuffer);
 
                 // Ensure that the new index does not overrun the data.
-                if (newOffset > int.MaxValue || (newOffset + size) > this.data.Length)
+                if (newOffset > int.MaxValue || size > int.MaxValue || newOffset + size > (ulong)this.data.Length)
                 {
                     this.AddInvalidTag(new UnkownExifTag(tag));
                     return;
