@@ -126,5 +126,18 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             Assert.Equal(1, meta.Values.Count(v => (ushort)v.Tag == (ushort)ExifTagValue.StripOffsets));
             Assert.Equal(1, meta.Values.Count(v => (ushort)v.Tag == (ushort)ExifTagValue.StripByteCounts));
         }
+
+        [Fact]
+        public void TiffDecoder_DirectoryEntryCountExceedsAvailableData_Throws()
+        {
+            byte[] data =
+            {
+                0x49, 0x49, 0x2B, 0x00, 0x08, 0x00, 0x00, 0x00,
+                0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00, 0x00,
+            };
+
+            Assert.Throws<InvalidImageContentException>(() => Image.Load(data));
+        }
     }
 }

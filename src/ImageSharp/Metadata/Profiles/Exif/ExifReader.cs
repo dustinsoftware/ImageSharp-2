@@ -207,6 +207,14 @@ namespace SixLabors.ImageSharp.Metadata.Profiles.Exif
             this.Seek(offset);
             ulong count = this.ReadUInt64();
 
+            const int BigTiffEntryLength = 20;
+            const int NextIfdOffsetLength = 8;
+            long remainingDirectoryBytes = this.data.Length - this.data.Position;
+            if (remainingDirectoryBytes < NextIfdOffsetLength || count > (ulong)((remainingDirectoryBytes - NextIfdOffsetLength) / BigTiffEntryLength))
+            {
+                throw new InvalidImageContentException("The BigTIFF directory entry count exceeds the available data.");
+            }
+
             Span<byte> offsetBuffer = stackalloc byte[8];
             for (ulong i = 0; i < count; i++)
             {
