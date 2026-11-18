@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 using System.IO;
+using System.Numerics;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using SixLabors.ImageSharp.Processing.Processors.Normalization;
@@ -16,21 +17,55 @@ namespace SixLabors.ImageSharp.Tests.Processing.Normalization
     {
         private static readonly ImageComparer ValidatorComparer = ImageComparer.TolerantPercentage(0.0456F);
 
+        private const float LowerInRangeSample = 0.625F;
+
+        private const float UpperInRangeSample = 0.75F;
+
+        private const float OneThird = 1F / 3F;
+
+        private static readonly float[] ExpectedWithOutOfRangeInTopBin = { 0F, 0F, OneThird, OneThird, 1F, 1F, 1F, 1F };
+
+        private static readonly float[] ExpectedWithOutOfRangeInBottomBin = { 0.5F, 0.5F, 1F, 1F, 0F, 0F, 0F, 0F };
+
         [Theory]
-        [InlineData(2F)]
-        [InlineData(-1F)]
-        [InlineData(float.PositiveInfinity)]
-        [InlineData(float.NegativeInfinity)]
-        [InlineData(float.NaN)]
-        public void GlobalHistogramEqualization_ClampsDecodedFloatingPointSamples(float sample)
+        [InlineData(2F, true)]
+        [InlineData(-1F, false)]
+        [InlineData(float.PositiveInfinity, true)]
+        [InlineData(float.NegativeInfinity, false)]
+        [InlineData(float.NaN, false)]
+        public void GlobalHistogramEqualization_ClampsDecodedFloatingPointSamples(float sample, bool isAboveRange)
         {
-            byte[] data = BuildFloatTiff(8, sample);
+            byte[] data = BuildFloatTiff(LowerInRangeSample, LowerInRangeSample, UpperInRangeSample, UpperInRangeSample, sample, sample, sample, sample);
 
             using Image<HalfVector4> image = Image.Load<HalfVector4>(data);
             image.Mutate(x => x.HistogramEqualization());
 
-            Assert.Equal(8, image.Width);
-            Assert.Equal(1, image.Height);
+            AssertEqualizedLuminance(image, isAboveRange ? ExpectedWithOutOfRangeInTopBin : ExpectedWithOutOfRangeInBottomBin);
+        }
+
+        [Theory]
+        [InlineData(float.PositiveInfinity, UpperInRangeSample, true)]
+        [InlineData(float.NaN, UpperInRangeSample, false)]
+        [InlineData(float.PositiveInfinity, float.NegativeInfinity, false)]
+        public void GlobalHistogramEqualization_ClampsDecodedRgbSamplesWithNonFiniteChannels(float red, float green, bool isAboveRange)
+        {
+            float[] samples =
+            {
+                LowerInRangeSample, LowerInRangeSample, LowerInRangeSample,
+                LowerInRangeSample, LowerInRangeSample, LowerInRangeSample,
+                UpperInRangeSample, UpperInRangeSample, UpperInRangeSample,
+                UpperInRangeSample, UpperInRangeSample, UpperInRangeSample,
+                red, green, UpperInRangeSample,
+                red, green, UpperInRangeSample,
+                red, green, UpperInRangeSample,
+                red, green, UpperInRangeSample,
+            };
+            byte[] data = BuildRgbFloatTiff(samples);
+
+            using Image<HalfVector4> image = Image.Load<HalfVector4>(data);
+            image.Mutate(x => x.HistogramEqualization());
+
+            AssertEqualizedLuminance(image, isAboveRange ? ExpectedWithOutOfRangeInTopBin : ExpectedWithOutOfRangeInBottomBin);
         }
 
         [Theory]
@@ -220,12 +255,79 @@ namespace SixLabors.ImageSharp.Tests.Processing.Normalization
             ValidatorComparer.VerifySimilarity(referenceResult, processed);
         }
 
-        private static byte[] BuildFloatTiff(int width, float sample)
+        private static void AssertEqualizedLuminance(Image<HalfVector4> image, float[] expected)
+        {
+            const int Precision = 3;
+
+            Assert.Equal(expected.Length, image.Width);
+            Assert.Equal(1, image.Height);
+            for (int x = 0; x < expected.Length; x++)
+            {
+                Vector4 pixel = image[x, 0].ToVector4();
+                Assert.Equal(expected[x], pixel.X, Precision);
+                Assert.Equal(expected[x], pixel.Y, Precision);
+                Assert.Equal(expected[x], pixel.Z, Precision);
+            }
+        }
+
+        private static byte[] BuildFloatTiff(params float[] samples)
+        {
+            const int headerLength = 8;
+            const int entryCount = 10;
+            const int ifdLength = 2 + (entryCount * 12) + 4;
+            uint pixelOffset = headerLength + ifdLength;
+            int width = samples.Length;
+
+            using var stream = new MemoryStream();
+            using var writer = new BinaryWriter(stream);
+
+            writer.Write((byte)0x49);
+            writer.Write((byte)0x49);
+            writer.Write((ushort)42);
+            writer.Write((uint)headerLength);
+            writer.Write((ushort)entryCount);
+            WriteEntry(writer, 256, 4, 1, (uint)width);
+            WriteEntry(writer, 257, 4, 1, 1);
+            WriteEntry(writer, 258, 3, 1, 32);
+            WriteEntry(writer, 259, 3, 1, 1);
+            WriteEntry(writer, 262, 3, 1, 1);
+            WriteEntry(writer, 273, 4, 1, pixelOffset);
+            WriteEntry(writer, 277, 3, 1, 1);
+            WriteEntry(writer, 278, 4, 1, 1);
+            WriteEntry(writer, 279, 4, 1, (uint)(width * sizeof(float)));
+            WriteEntry(writer, 339, 3, 1, 3);
+            writer.Write(0U);
+
+            for (int i = 0; i < width; i++)
+            {
+                writer.Write(samples[i]);
+            }
+
+            return stream.ToArray();
+
+            static void WriteEntry(BinaryWriter writer, ushort tag, ushort type, uint count, uint value)
+            {
+                writer.Write(tag);
+                writer.Write(type);
+                writer.Write(count);
+                writer.Write(value);
+            }
+        }
+
+        private static byte[] BuildRgbFloatTiff(float[] samples)
         {
             const int HeaderLength = 8;
             const int EntryCount = 10;
             const int IfdLength = 2 + (EntryCount * 12) + 4;
-            const uint PixelOffset = HeaderLength + IfdLength;
+            const int ChannelCount = 3;
+            const int PerChannelArrayLength = ChannelCount * sizeof(ushort);
+            const uint BitsPerSampleOffset = HeaderLength + IfdLength;
+            const uint SampleFormatOffset = BitsPerSampleOffset + PerChannelArrayLength;
+            const uint PixelOffset = SampleFormatOffset + PerChannelArrayLength;
+            const ushort BitsPerChannel = 32;
+            const ushort FloatSampleFormat = 3;
+            const ushort RgbPhotometricInterpretation = 2;
+            int width = samples.Length / ChannelCount;
 
             using var stream = new MemoryStream();
             using var writer = new BinaryWriter(stream);
@@ -237,17 +339,27 @@ namespace SixLabors.ImageSharp.Tests.Processing.Normalization
             writer.Write((ushort)EntryCount);
             WriteEntry(writer, 256, 4, 1, (uint)width);
             WriteEntry(writer, 257, 4, 1, 1);
-            WriteEntry(writer, 258, 3, 1, 32);
+            WriteEntry(writer, 258, 3, ChannelCount, BitsPerSampleOffset);
             WriteEntry(writer, 259, 3, 1, 1);
-            WriteEntry(writer, 262, 3, 1, 1);
+            WriteEntry(writer, 262, 3, 1, RgbPhotometricInterpretation);
             WriteEntry(writer, 273, 4, 1, PixelOffset);
-            WriteEntry(writer, 277, 3, 1, 1);
+            WriteEntry(writer, 277, 3, 1, ChannelCount);
             WriteEntry(writer, 278, 4, 1, 1);
-            WriteEntry(writer, 279, 4, 1, (uint)(width * sizeof(float)));
-            WriteEntry(writer, 339, 3, 1, 3);
+            WriteEntry(writer, 279, 4, 1, (uint)(samples.Length * sizeof(float)));
+            WriteEntry(writer, 339, 3, ChannelCount, SampleFormatOffset);
             writer.Write(0U);
 
-            for (int i = 0; i < width; i++)
+            for (int i = 0; i < ChannelCount; i++)
+            {
+                writer.Write(BitsPerChannel);
+            }
+
+            for (int i = 0; i < ChannelCount; i++)
+            {
+                writer.Write(FloatSampleFormat);
+            }
+
+            foreach (float sample in samples)
             {
                 writer.Write(sample);
             }

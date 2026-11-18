@@ -535,10 +535,10 @@ namespace SixLabors.ImageSharp.Formats.Tiff.Compression.Compressors
         public override void Initialize(int rowsPerStrip)
         {
             long maxNeededBits = this.GetMaximumEncodedBits(rowsPerStrip);
-            long maxNeededBytes = (maxNeededBits + 7) / 8;
+            ulong maxNeededBytes = (ulong)((maxNeededBits + 7) / 8);
             if (maxNeededBytes > int.MaxValue)
             {
-                throw new InvalidMemoryOperationException($"Requested allocation: '{maxNeededBytes}' elements of '{nameof(Byte)}' is over the capacity of a single buffer.");
+                InvalidMemoryOperationException.ThrowAllocationOverLimitException(maxNeededBytes, int.MaxValue);
             }
 
             this.compressedDataBuffer = this.Allocator.Allocate<byte>((int)maxNeededBytes);

@@ -72,6 +72,23 @@ namespace SixLabors.ImageSharp.Tests.Metadata.Profiles.ICC.DataReader
             Assert.Throws<InvalidIccProfileException>(() => CreateReader(new byte[64]).ReadClut8(3, 1, gridPointCount));
         }
 
+        [Fact]
+        public void ReadClut8_WithUnequalGridPoints_ReadsProductOfGridPoints()
+        {
+            byte[] gridPointCount = { 2, 3, 4 };
+            const int NodeCount = 2 * 3 * 4;
+            const float Max = byte.MaxValue;
+            byte[] data = Enumerable.Range(0, NodeCount).Select(i => (byte)i).ToArray();
+
+            IccClut clut = CreateReader(data).ReadClut8(3, 1, gridPointCount);
+
+            Assert.Equal(NodeCount, clut.Values.Length);
+            for (int i = 0; i < NodeCount; i++)
+            {
+                Assert.Equal(new[] { i / Max }, clut.Values[i]);
+            }
+        }
+
         [Theory]
         [MemberData(nameof(IccTestDataLut.Lut8TestData), MemberType = typeof(IccTestDataLut))]
         internal void ReadLut8(byte[] data, IccLut expected)

@@ -409,6 +409,45 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
         public void TiffEncoder_EncodeBiColor_WithCcittGroup3FaxCompression_BlackIsZero_Works<TPixel>(TestImageProvider<TPixel> provider)
             where TPixel : unmanaged, IPixel<TPixel> => TestTiffEncoderCore(provider, TiffBitsPerPixel.Bit1, TiffPhotometricInterpretation.BlackIsZero, TiffCompression.CcittGroup3Fax);
 
+        /// <summary>
+        /// CCITT row framing must fit even when each row contains only one pixel.
+        /// </summary>
+        /// <param name="width">The image width.</param>
+        [Theory]
+        [InlineData(1)]
+        [InlineData(64)]
+        public void TiffEncoder_EncodeNarrowCcittGroup3Fax_Works(int width)
+        {
+            using var image = new Image<L8>(width, 2000);
+
+            for (int y = 0; y < image.Height; y++)
+            {
+                for (int x = 0; x < image.Width; x++)
+                {
+                    image[x, y] = new L8((byte)(((x + y) & 1) == 0 ? 255 : 0));
+                }
+            }
+
+            TiffFrameMetadata metadata = image.Frames.RootFrame.Metadata.GetTiffMetadata();
+            metadata.BitsPerPixel = TiffBitsPerPixel.Bit1;
+            metadata.Compression = TiffCompression.CcittGroup3Fax;
+
+            using var output = new MemoryStream();
+            image.Save(output, new TiffEncoder());
+
+            output.Position = 0;
+            using Image<L8> decoded = Image.Load<L8>(output);
+            Assert.Equal(image.Size(), decoded.Size());
+
+            for (int y = 0; y < image.Height; y++)
+            {
+                for (int x = 0; x < image.Width; x++)
+                {
+                    Assert.Equal(image[x, y], decoded[x, y]);
+                }
+            }
+        }
+
         [Theory]
         [WithFile(Calliphora_BiColorUncompressed, PixelTypes.Rgba32)]
         public void TiffEncoder_EncodeBiColor_WithCcittGroup4FaxCompression_WhiteIsZero_Works<TPixel>(TestImageProvider<TPixel> provider)
@@ -420,8 +459,6 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             where TPixel : unmanaged, IPixel<TPixel> => TestTiffEncoderCore(provider, TiffBitsPerPixel.Bit1, TiffPhotometricInterpretation.BlackIsZero, TiffCompression.CcittGroup4Fax);
 
         [Theory]
-        [InlineData(TiffCompression.CcittGroup3Fax, 1)]
-        [InlineData(TiffCompression.CcittGroup3Fax, 64)]
         [InlineData(TiffCompression.CcittGroup4Fax, 1)]
         [InlineData(TiffCompression.CcittGroup4Fax, 64)]
         [InlineData(TiffCompression.Ccitt1D, 1)]
@@ -469,13 +506,17 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
 
             var random = new Random(width);
             using var image = new Image<L8>(width, Height);
-            int trailingWhiteRow = Height - 1;
-            for (int x = 0; x < width; x++)
+            int randomRowCount = Height;
+            if (compression == TiffCompression.Ccitt1D)
             {
-                image[x, trailingWhiteRow] = new L8(White);
+                randomRowCount = Height - 1;
+                for (int x = 0; x < width; x++)
+                {
+                    image[x, randomRowCount] = new L8(White);
+                }
             }
 
-            for (int y = 0; y < trailingWhiteRow; y++)
+            for (int y = 0; y < randomRowCount; y++)
             {
                 if (y > 0 && random.Next(RepeatPreviousRowChance) == 0)
                 {
@@ -506,6 +547,9 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             AssertCcittRoundTrip(image, compression);
         }
 
+        /// <summary>
+        /// Re-encoding a one-pixel Group 4 image must retain its pixel and fit the end-of-block code.
+        /// </summary>
         [Fact]
         public void TiffEncoder_ReencodeNarrowCcittGroup4Fax_Works()
         {
