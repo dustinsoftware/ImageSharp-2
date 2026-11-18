@@ -124,6 +124,7 @@ No public API changes. `TiffCcittCompressor` and its subclasses, `IccDataReader`
 | `GlobalHistogramEqualization_ClampsDecodedFloatingPointSamples` (2, -1, +inf, -inf, NaN) | `HistogramEqualizationTests.cs` | test host crashes (AccessViolation) |
 | `TiffEncoder_EncodeNarrowAlternatingCcitt_Works` (G3, G4, 1D x width 1, 64) | `TiffEncoderTests.cs` | width 1 G3 and 1D fail |
 | `TiffEncoder_ReencodeNarrowCcittGroup4Fax_Works` | `TiffEncoderTests.cs` | fails |
+| `TiffEncoder_EncodeRandomRunsCcitt_RoundTrips` (G3, G4, 1D x 23 widths) | `TiffEncoderTests.cs` | not run pre-fix (regression guard for the bounds) |
 
 ## Deliberate deviations from upstream
 
@@ -136,7 +137,10 @@ No public API changes. `TiffCcittCompressor` and its subclasses, `IccDataReader`
 - Collection expressions and range indexers in upstream tests are rewritten for 2.1's language
   version and frameworks (array initializers, `Span.Slice`).
 - Extra test cases beyond upstream: NaN/negative/infinite histogram samples, a zero-grid-point
-  CLUT, and Group 4 / Modified Huffman narrow-image round trips.
+  CLUT, Group 4 / Modified Huffman narrow-image round trips, and
+  `TiffEncoder_EncodeRandomRunsCcitt_RoundTrips` (fixed-seed random runs, including makeup-code
+  lengths, for widths 1..17, 63..65, 255, 2560 and 2561 under all three CCITT codecs). Its images
+  end with an all-white row because of the Modified Huffman decoder limitation under Residuals.
 
 ## Verification plan
 
@@ -158,3 +162,8 @@ No public API changes. `TiffCcittCompressor` and its subclasses, `IccDataReader`
   `*.BMP` line; do not commit that change.
 - GHSA-jj3q / GHSA-v76p on 2.1 raise `IndexOutOfRangeException` rather than
   `InvalidImageContentException` for malformed fax strips. Not memory-unsafe; left as is.
+- Modified Huffman decoding (`ModifiedHuffmanBitReader.HasMoreData`, unchanged in upstream
+  v3.2.0) stops when the strip's last byte starts on a code boundary, so a final row encoded
+  entirely in that byte is not decoded and keeps the zero-filled buffer value (white for the
+  encoder's default `WhiteIsZero` output). Data loss only, not
+  memory-unsafe, and not introduced by these ports; left as is.

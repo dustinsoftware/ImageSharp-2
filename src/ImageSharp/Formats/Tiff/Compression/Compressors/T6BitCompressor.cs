@@ -133,6 +133,16 @@ namespace SixLabors.ImageSharp.Formats.Tiff.Compression.Compressors
         }
 
         /// <inheritdoc />
+        protected override long GetMaximumEncodedBits(int rowsPerStrip)
+        {
+            const int MaxBitsPerPixel = 16;
+            const int RowTransitionOverheadBits = 24;
+            const int EndOfFacsimileBlockBits = 24;
+
+            return ((((long)this.Width * MaxBitsPerPixel) + RowTransitionOverheadBits) * rowsPerStrip) + EndOfFacsimileBlockBits;
+        }
+
+        /// <inheritdoc />
         protected override void Dispose(bool disposing)
         {
             this.referenceLineBuffer?.Dispose();
