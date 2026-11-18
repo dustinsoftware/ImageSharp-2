@@ -128,6 +128,17 @@ namespace SixLabors.ImageSharp.Formats.Tiff.Compression.Compressors
             }
         }
 
+        /// <inheritdoc />
+        protected override long GetMaximumEncodedBits(int rowsPerStrip)
+        {
+            const int EndOfLineBits = 12;
+            const int MaxTerminatingCodeBitsPerPixel = 13;
+            const int ZeroLengthWhiteRunBits = 8;
+            const int RowOverheadBits = ZeroLengthWhiteRunBits + EndOfLineBits;
+
+            return EndOfLineBits + ((((long)this.Width * MaxTerminatingCodeBitsPerPixel) + RowOverheadBits) * rowsPerStrip);
+        }
+
         private void WriteEndOfLine(Span<byte> compressedData)
         {
             if (this.useModifiedHuffman)

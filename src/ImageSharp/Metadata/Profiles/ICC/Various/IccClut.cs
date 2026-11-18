@@ -173,13 +173,11 @@ namespace SixLabors.ImageSharp.Metadata.Profiles.Icc
             bool isLengthDifferent = this.Values.Any(t => t.Length != this.OutputChannelCount);
             Guard.IsFalse(isLengthDifferent, nameof(this.Values), "The number of output values varies");
 
-            int length = 0;
-            for (int i = 0; i < this.InputChannelCount; i++)
+            long length = 1;
+            for (int i = 0; i < this.InputChannelCount && length <= this.Values.Length; i++)
             {
-                length += (int)Math.Pow(this.GridPointCount[i], this.InputChannelCount);
+                length *= this.GridPointCount[i];
             }
-
-            length /= this.InputChannelCount;
 
             Guard.IsTrue(this.Values.Length == length, nameof(this.Values), "Length of values array does not match the grid points");
         }

@@ -29,7 +29,16 @@ namespace SixLabors.ImageSharp
         /// </param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetBT709Luminance(ref Vector4 vector, int luminanceLevels)
-            => (int)MathF.Round(Vector4.Dot(vector, Bt709) * (luminanceLevels - 1));
+        {
+            float luminance = Vector4.Dot(vector, Bt709);
+            if (float.IsNaN(luminance))
+            {
+                return 0;
+            }
+
+            luminance = Numerics.Clamp(luminance, 0F, 1F);
+            return (int)MathF.Round(luminance * (luminanceLevels - 1));
+        }
 
         /// <summary>
         /// Gets the luminance from the rgb components using the formula

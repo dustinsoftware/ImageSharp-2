@@ -1,6 +1,7 @@
 // Copyright (c) Six Labors.
 // Licensed under the Apache License, Version 2.0.
 
+using System.Linq;
 using SixLabors.ImageSharp.Metadata.Profiles.Icc;
 using Xunit;
 
@@ -51,6 +52,41 @@ namespace SixLabors.ImageSharp.Tests.Metadata.Profiles.ICC.DataReader
             IccClut output = reader.ReadClutF32(inChannelCount, outChannelCount, gridPointCount);
 
             Assert.Equal(expected, output);
+        }
+
+        [Fact]
+        public void ReadClut_WithOversizedDimensions_ThrowsInvalidIccProfileException()
+        {
+            byte[] gridPointCount = Enumerable.Repeat((byte)3, 15).ToArray();
+
+            Assert.Throws<InvalidIccProfileException>(() => CreateReader(new byte[8]).ReadClut8(15, 15, gridPointCount));
+            Assert.Throws<InvalidIccProfileException>(() => CreateReader(new byte[8]).ReadClut16(15, 15, gridPointCount));
+            Assert.Throws<InvalidIccProfileException>(() => CreateReader(new byte[8]).ReadClutF32(15, 15, gridPointCount));
+        }
+
+        [Fact]
+        public void ReadClut_WithZeroGridPoints_ThrowsInvalidIccProfileException()
+        {
+            byte[] gridPointCount = { 2, 0, 2 };
+
+            Assert.Throws<InvalidIccProfileException>(() => CreateReader(new byte[64]).ReadClut8(3, 1, gridPointCount));
+        }
+
+        [Fact]
+        public void ReadClut8_WithUnequalGridPoints_ReadsProductOfGridPoints()
+        {
+            byte[] gridPointCount = { 2, 3, 4 };
+            const int NodeCount = 2 * 3 * 4;
+            const float Max = byte.MaxValue;
+            byte[] data = Enumerable.Range(0, NodeCount).Select(i => (byte)i).ToArray();
+
+            IccClut clut = CreateReader(data).ReadClut8(3, 1, gridPointCount);
+
+            Assert.Equal(NodeCount, clut.Values.Length);
+            for (int i = 0; i < NodeCount; i++)
+            {
+                Assert.Equal(new[] { i / Max }, clut.Values[i]);
+            }
         }
 
         [Theory]

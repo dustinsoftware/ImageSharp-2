@@ -1,6 +1,7 @@
 // Copyright (c) Six Labors.
 // Licensed under the Apache License, Version 2.0.
 
+using System;
 using System.IO;
 using SixLabors.ImageSharp.Formats.Tiff;
 using SixLabors.ImageSharp.Formats.Tiff.Constants;
@@ -408,6 +409,45 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
         public void TiffEncoder_EncodeBiColor_WithCcittGroup3FaxCompression_BlackIsZero_Works<TPixel>(TestImageProvider<TPixel> provider)
             where TPixel : unmanaged, IPixel<TPixel> => TestTiffEncoderCore(provider, TiffBitsPerPixel.Bit1, TiffPhotometricInterpretation.BlackIsZero, TiffCompression.CcittGroup3Fax);
 
+        /// <summary>
+        /// CCITT row framing must fit even when each row contains only one pixel.
+        /// </summary>
+        /// <param name="width">The image width.</param>
+        [Theory]
+        [InlineData(1)]
+        [InlineData(64)]
+        public void TiffEncoder_EncodeNarrowCcittGroup3Fax_Works(int width)
+        {
+            using var image = new Image<L8>(width, 2000);
+
+            for (int y = 0; y < image.Height; y++)
+            {
+                for (int x = 0; x < image.Width; x++)
+                {
+                    image[x, y] = new L8((byte)(((x + y) & 1) == 0 ? 255 : 0));
+                }
+            }
+
+            TiffFrameMetadata metadata = image.Frames.RootFrame.Metadata.GetTiffMetadata();
+            metadata.BitsPerPixel = TiffBitsPerPixel.Bit1;
+            metadata.Compression = TiffCompression.CcittGroup3Fax;
+
+            using var output = new MemoryStream();
+            image.Save(output, new TiffEncoder());
+
+            output.Position = 0;
+            using Image<L8> decoded = Image.Load<L8>(output);
+            Assert.Equal(image.Size(), decoded.Size());
+
+            for (int y = 0; y < image.Height; y++)
+            {
+                for (int x = 0; x < image.Width; x++)
+                {
+                    Assert.Equal(image[x, y], decoded[x, y]);
+                }
+            }
+        }
+
         [Theory]
         [WithFile(Calliphora_BiColorUncompressed, PixelTypes.Rgba32)]
         public void TiffEncoder_EncodeBiColor_WithCcittGroup4FaxCompression_WhiteIsZero_Works<TPixel>(TestImageProvider<TPixel> provider)
@@ -417,6 +457,115 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
         [WithFile(Calliphora_BiColorUncompressed, PixelTypes.Rgba32)]
         public void TiffEncoder_EncodeBiColor_WithCcittGroup4FaxCompression_BlackIsZero_Works<TPixel>(TestImageProvider<TPixel> provider)
             where TPixel : unmanaged, IPixel<TPixel> => TestTiffEncoderCore(provider, TiffBitsPerPixel.Bit1, TiffPhotometricInterpretation.BlackIsZero, TiffCompression.CcittGroup4Fax);
+
+        [Theory]
+        [InlineData(TiffCompression.CcittGroup4Fax, 1)]
+        [InlineData(TiffCompression.CcittGroup4Fax, 64)]
+        [InlineData(TiffCompression.Ccitt1D, 1)]
+        [InlineData(TiffCompression.Ccitt1D, 64)]
+        public void TiffEncoder_EncodeNarrowAlternatingCcitt_Works(TiffCompression compression, int width)
+        {
+            using var image = new Image<L8>(width, 2000);
+
+            for (int y = 0; y < image.Height; y++)
+            {
+                for (int x = 0; x < image.Width; x++)
+                {
+                    image[x, y] = new L8((byte)(((x + y) & 1) == 0 ? 255 : 0));
+                }
+            }
+
+            AssertCcittRoundTrip(image, compression);
+        }
+
+        public static TheoryData<TiffCompression, int> CcittRandomRunsData()
+        {
+            var data = new TheoryData<TiffCompression, int>();
+            TiffCompression[] compressions = { TiffCompression.CcittGroup3Fax, TiffCompression.CcittGroup4Fax, TiffCompression.Ccitt1D };
+            int[] widths = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 63, 64, 65, 255, 2560, 2561 };
+            foreach (TiffCompression compression in compressions)
+            {
+                foreach (int width in widths)
+                {
+                    data.Add(compression, width);
+                }
+            }
+
+            return data;
+        }
+
+        [Theory]
+        [MemberData(nameof(CcittRandomRunsData))]
+        public void TiffEncoder_EncodeRandomRunsCcitt_RoundTrips(TiffCompression compression, int width)
+        {
+            const int Height = 24;
+            const int RepeatPreviousRowChance = 4;
+            const byte White = 255;
+            const byte Black = 0;
+            int[] maxRunLengths = { 1, 2, 4, 64, 65, 128, 2600 };
+
+            var random = new Random(width);
+            using var image = new Image<L8>(width, Height);
+            int randomRowCount = Height;
+            if (compression == TiffCompression.Ccitt1D)
+            {
+                randomRowCount = Height - 1;
+                for (int x = 0; x < width; x++)
+                {
+                    image[x, randomRowCount] = new L8(White);
+                }
+            }
+
+            for (int y = 0; y < randomRowCount; y++)
+            {
+                if (y > 0 && random.Next(RepeatPreviousRowChance) == 0)
+                {
+                    for (int x = 0; x < width; x++)
+                    {
+                        image[x, y] = image[x, y - 1];
+                    }
+
+                    continue;
+                }
+
+                byte color = random.Next(2) == 0 ? White : Black;
+                int position = 0;
+                while (position < width)
+                {
+                    int maxRunLength = maxRunLengths[random.Next(maxRunLengths.Length)];
+                    int runLength = Math.Min(width - position, 1 + random.Next(maxRunLength));
+                    for (int x = position; x < position + runLength; x++)
+                    {
+                        image[x, y] = new L8(color);
+                    }
+
+                    position += runLength;
+                    color = color == White ? Black : White;
+                }
+            }
+
+            AssertCcittRoundTrip(image, compression);
+        }
+
+        /// <summary>
+        /// Re-encoding a one-pixel Group 4 image must retain its pixel and fit the end-of-block code.
+        /// </summary>
+        [Fact]
+        public void TiffEncoder_ReencodeNarrowCcittGroup4Fax_Works()
+        {
+            byte[] data = Convert.FromBase64String(
+                "SUkqAAgAAAAJAAABAwABAAAAAQAAAAEBAwABAAAAAQAAAAIBAwABAAAAAQAAAAMBAwABAAAABAAAAAYBAwABAAAAAAAAABEBBAABAAAA" +
+                "egAAABUBAwABAAAAAQAAABYBBAABAAAAAQAAABcBBAABAAAABAAAAAAAAACACACA");
+
+            using Image<L8> image = Image.Load<L8>(data);
+            using var output = new MemoryStream();
+            image.Save(output, new TiffEncoder());
+
+            output.Position = 0;
+            using Image<L8> decoded = Image.Load<L8>(output);
+            Assert.Equal(new Size(1, 1), decoded.Size());
+            Assert.Equal(image[0, 0], decoded[0, 0]);
+        }
 
         [Theory]
         [WithFile(Calliphora_BiColorUncompressed, PixelTypes.Rgba32)]
@@ -463,6 +612,28 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
 
             var encoder = new TiffEncoder { PhotometricInterpretation = photometricInterpretation };
             image.DebugSave(provider, encoder);
+        }
+
+        private static void AssertCcittRoundTrip(Image<L8> image, TiffCompression compression)
+        {
+            TiffFrameMetadata metadata = image.Frames.RootFrame.Metadata.GetTiffMetadata();
+            metadata.BitsPerPixel = TiffBitsPerPixel.Bit1;
+            metadata.Compression = compression;
+
+            using var output = new MemoryStream();
+            image.Save(output, new TiffEncoder());
+
+            output.Position = 0;
+            using Image<L8> decoded = Image.Load<L8>(output);
+            Assert.Equal(image.Size(), decoded.Size());
+
+            for (int y = 0; y < image.Height; y++)
+            {
+                for (int x = 0; x < image.Width; x++)
+                {
+                    Assert.Equal(image[x, y], decoded[x, y]);
+                }
+            }
         }
     }
 }

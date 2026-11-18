@@ -27,5 +27,11 @@ namespace SixLabors.ImageSharp.Memory
         public InvalidMemoryOperationException()
         {
         }
+
+#if NETSTANDARD2_1 || NETCOREAPP3_1_OR_GREATER
+        [DoesNotReturn]
+#endif
+        internal static void ThrowAllocationOverLimitException(ulong length, long limit) =>
+                throw new InvalidMemoryOperationException($"Attempted to allocate a buffer of length={length} that exceeded the limit {limit}.");
     }
 }

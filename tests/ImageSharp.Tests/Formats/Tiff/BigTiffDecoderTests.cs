@@ -126,5 +126,85 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             Assert.Equal(1, meta.Values.Count(v => (ushort)v.Tag == (ushort)ExifTagValue.StripOffsets));
             Assert.Equal(1, meta.Values.Count(v => (ushort)v.Tag == (ushort)ExifTagValue.StripByteCounts));
         }
+
+        [Fact]
+        public void TiffDecoder_DirectoryEntryCountExceedsAvailableData_Throws()
+        {
+            byte[] data =
+            {
+                0x49, 0x49, 0x2B, 0x00, 0x08, 0x00, 0x00, 0x00,
+                0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00, 0x00,
+            };
+
+            Assert.Throws<InvalidImageContentException>(() => Image.Load(data));
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(4)]
+        [InlineData(7)]
+        public void TiffDecoder_DirectoryEntriesLeaveTooLittleDataForNextIfdOffset_Throws(int nextIfdOffsetLength)
+        {
+            byte[] data = BuildSinglePixelBigTiff(nextIfdOffsetLength);
+
+            Assert.Throws<InvalidImageContentException>(() => Image.Load(data));
+        }
+
+        [Fact]
+        public void TiffDecoder_DirectoryWithCompleteNextIfdOffset_Decodes()
+        {
+            const int NextIfdOffsetLength = 8;
+            byte[] data = BuildSinglePixelBigTiff(NextIfdOffsetLength);
+
+            using Image<L8> image = Image.Load<L8>(data);
+
+            Assert.Equal(new Size(1, 1), image.Size());
+            Assert.Equal(new L8(byte.MaxValue), image[0, 0]);
+        }
+
+        private static byte[] BuildSinglePixelBigTiff(int nextIfdOffsetLength)
+        {
+            const ushort BigTiffVersion = 43;
+            const ushort OffsetSize = 8;
+            const ulong PixelOffset = 16;
+            const ulong IfdOffset = 24;
+            const ushort ShortType = 3;
+            const ushort LongType = 4;
+            const ulong EntryCount = 7;
+            const byte WhitePixel = byte.MaxValue;
+
+            using var stream = new MemoryStream();
+            using var writer = new BinaryWriter(stream);
+
+            writer.Write((byte)0x49);
+            writer.Write((byte)0x49);
+            writer.Write(BigTiffVersion);
+            writer.Write(OffsetSize);
+            writer.Write((ushort)0);
+            writer.Write(IfdOffset);
+            writer.Write(WhitePixel);
+            writer.Write(new byte[IfdOffset - PixelOffset - 1]);
+
+            writer.Write(EntryCount);
+            WriteEntry(writer, (ushort)ExifTagValue.ImageWidth, ShortType, 1);
+            WriteEntry(writer, (ushort)ExifTagValue.ImageLength, ShortType, 1);
+            WriteEntry(writer, (ushort)ExifTagValue.BitsPerSample, ShortType, 8);
+            WriteEntry(writer, (ushort)ExifTagValue.Compression, ShortType, 1);
+            WriteEntry(writer, (ushort)ExifTagValue.PhotometricInterpretation, ShortType, 1);
+            WriteEntry(writer, (ushort)ExifTagValue.StripOffsets, LongType, PixelOffset);
+            WriteEntry(writer, (ushort)ExifTagValue.StripByteCounts, LongType, 1);
+            writer.Write(new byte[nextIfdOffsetLength]);
+
+            return stream.ToArray();
+
+            static void WriteEntry(BinaryWriter writer, ushort tag, ushort type, ulong value)
+            {
+                writer.Write(tag);
+                writer.Write(type);
+                writer.Write(1UL);
+                writer.Write(value);
+            }
+        }
     }
 }
