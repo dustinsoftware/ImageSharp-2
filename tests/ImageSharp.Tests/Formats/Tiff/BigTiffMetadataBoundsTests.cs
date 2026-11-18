@@ -2,15 +2,14 @@
 // Licensed under the Apache License, Version 2.0.
 
 using System;
-using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Text;
 using SixLabors.ImageSharp.Memory;
 using SixLabors.ImageSharp.Metadata.Profiles.Exif;
+using SixLabors.ImageSharp.Tests.TestUtilities;
 using Xunit;
 
 namespace SixLabors.ImageSharp.Tests.Formats.Tiff
@@ -20,20 +19,31 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
     {
         private const ushort ImageDescriptionTag = 270;
 
+        private const ushort FreeOffsetsTag = 288;
+
+        private const ushort PageNumberTag = 297;
+
+        private const ushort SoftwareTag = 305;
+
+        private const ushort ArtistTag = 315;
+
+        private const ushort ReferenceBlackWhiteTag = 532;
+
         private const ulong InFileOffset = 16;
 
         private static readonly byte[] Description = Encoding.ASCII.GetBytes("BigTIFF metadata bounds\0");
+
+        private static readonly byte[] Artist = Encoding.ASCII.GetBytes("Metadata bounds artist\0");
 
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
         public void ValidMetadata_IsRead(bool bigEndian)
         {
-            byte[] artist = Encoding.ASCII.GetBytes("Metadata bounds artist\0");
             byte[] data = new BigTiffBuilder(bigEndian)
-                .AddInline(305, ExifDataType.Ascii, 4, Encoding.ASCII.GetBytes("abc\0"))
+                .AddInline(SoftwareTag, ExifDataType.Ascii, 4, Encoding.ASCII.GetBytes("abc\0"))
                 .AddExternal(ImageDescriptionTag, ExifDataType.Ascii, Description)
-                .AddExternal(315, ExifDataType.Ascii, artist)
+                .AddExternal(ArtistTag, ExifDataType.Ascii, Artist)
                 .Build();
 
             var allocator = new BoundedRecordingAllocator();
@@ -65,6 +75,7 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             ExifProfile profile = image.Frames.RootFrame.Metadata.ExifProfile;
             Assert.Equal("BigTIFF metadata bounds", profile.GetValue(ExifTag.ImageDescription).Value);
             Assert.Empty(profile.InvalidTags);
+            Assert.All(allocator.RequestedBytes, bytes => Assert.True(bytes < data.Length));
         }
 
         [Fact]
@@ -73,16 +84,18 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             const ulong count = 16;
             byte[] data = new BigTiffBuilder(false)
                 .AddRaw(ImageDescriptionTag, ExifDataType.Ascii, count, length => (ulong)length - count + 1)
+                .AddExternal(ArtistTag, ExifDataType.Ascii, Artist)
                 .Build();
 
             AssertDroppedWithoutLargeAllocation(data, ImageDescriptionTag);
         }
 
         [Fact]
-        public void ValueOneByteLargerThanStream_IsDroppedWithoutAllocating()
+        public void ValueOneByteLargerThanStream_IsDropped()
         {
             byte[] data = new BigTiffBuilder(false)
                 .AddRaw(ImageDescriptionTag, ExifDataType.Ascii, length => (ulong)length + 1, _ => InFileOffset)
+                .AddExternal(ArtistTag, ExifDataType.Ascii, Artist)
                 .Build();
 
             AssertDroppedWithoutLargeAllocation(data, ImageDescriptionTag);
@@ -97,10 +110,11 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
         [InlineData((ulong)int.MaxValue + 1, true)]
         [InlineData((1UL << 32) + 16, false)]
         [InlineData(ulong.MaxValue, false)]
-        public void ValueLargerThanStream_IsDroppedWithoutAllocating(ulong count, bool bigEndian)
+        public void ValueLargerThanStream_IsDropped(ulong count, bool bigEndian)
         {
             byte[] data = new BigTiffBuilder(bigEndian)
                 .AddRaw(ImageDescriptionTag, ExifDataType.Ascii, count, _ => InFileOffset)
+                .AddExternal(ArtistTag, ExifDataType.Ascii, Artist)
                 .Build();
 
             AssertDroppedWithoutLargeAllocation(data, ImageDescriptionTag);
@@ -115,6 +129,7 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             const long streamLength = 1L << 33;
             byte[] data = new BigTiffBuilder(false)
                 .AddRaw(ImageDescriptionTag, ExifDataType.Ascii, count, _ => InFileOffset)
+                .AddExternal(ArtistTag, ExifDataType.Ascii, Artist)
                 .Build();
 
             var allocator = new BoundedRecordingAllocator();
@@ -139,6 +154,7 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
         {
             byte[] data = new BigTiffBuilder(false)
                 .AddRaw(ImageDescriptionTag, ExifDataType.Ascii, count, _ => offset)
+                .AddExternal(ArtistTag, ExifDataType.Ascii, Artist)
                 .Build();
 
             AssertDroppedWithoutLargeAllocation(data, ImageDescriptionTag);
@@ -149,22 +165,24 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
         {
             byte[] data = new BigTiffBuilder(false)
                 .AddRaw(ImageDescriptionTag, ExifDataType.Ascii, 9, length => (ulong)length)
+                .AddExternal(ArtistTag, ExifDataType.Ascii, Artist)
                 .Build();
 
             AssertDroppedWithoutLargeAllocation(data, ImageDescriptionTag);
         }
 
         [Theory]
-        [InlineData(532, ExifDataType.Rational, (1UL << 61) + 1)]
-        [InlineData(532, ExifDataType.Rational, (1UL << 61) + 2)]
-        [InlineData(532, ExifDataType.Rational, 1UL << 61)]
-        [InlineData(297, ExifDataType.Short, (1UL << 63) + 1)]
-        [InlineData(288, ExifDataType.Long, (1UL << 62) + 1)]
-        [InlineData(288, ExifDataType.Long, (1UL << 62) + 4)]
+        [InlineData(ReferenceBlackWhiteTag, ExifDataType.Rational, (1UL << 61) + 1)]
+        [InlineData(ReferenceBlackWhiteTag, ExifDataType.Rational, (1UL << 61) + 2)]
+        [InlineData(ReferenceBlackWhiteTag, ExifDataType.Rational, 1UL << 61)]
+        [InlineData(PageNumberTag, ExifDataType.Short, (1UL << 63) + 1)]
+        [InlineData(FreeOffsetsTag, ExifDataType.Long, (1UL << 62) + 1)]
+        [InlineData(FreeOffsetsTag, ExifDataType.Long, (1UL << 62) + 4)]
         public void ComponentCountOverflow_IsDropped(ushort tag, ExifDataType dataType, ulong count)
         {
             byte[] data = new BigTiffBuilder(false)
                 .AddRaw(tag, dataType, count, _ => InFileOffset)
+                .AddExternal(ArtistTag, ExifDataType.Ascii, Artist)
                 .Build();
 
             AssertDroppedWithoutLargeAllocation(data, tag);
@@ -185,6 +203,7 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             Assert.DoesNotContain(profile.Values, value => (ushort)value.Tag == tag);
             Assert.Contains(profile.InvalidTags, invalidTag => (ushort)invalidTag == tag);
             Assert.Equal("BigTIFF", profile.GetValue(ExifTag.Software).Value);
+            Assert.Equal("Metadata bounds artist", profile.GetValue(ExifTag.Artist).Value);
         }
 
         private static IImageInfo Identify(byte[] data, BoundedRecordingAllocator allocator)
@@ -212,91 +231,6 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             return configuration;
         }
 
-        private sealed class BoundedRecordingAllocator : MemoryAllocator
-        {
-            private const int MaxRequestBytes = 1024 * 1024;
-
-            private readonly MemoryAllocator inner = new SimpleGcMemoryAllocator();
-
-            public List<long> RequestedBytes { get; } = new();
-
-            public override IMemoryOwner<T> Allocate<T>(int length, AllocationOptions options = AllocationOptions.None)
-            {
-                long bytes = (long)length * Unsafe.SizeOf<T>();
-                this.RequestedBytes.Add(bytes);
-                if (bytes > MaxRequestBytes)
-                {
-                    throw new InvalidOperationException($"Allocation request of {bytes} bytes exceeds the test limit of {MaxRequestBytes} bytes.");
-                }
-
-                return this.inner.Allocate<T>(length, options);
-            }
-
-            protected internal override int GetBufferCapacityInBytes() => MaxRequestBytes;
-        }
-
-        private sealed class LargeLengthStream : Stream
-        {
-            private readonly byte[] prefix;
-
-            private readonly long length;
-
-            private long position;
-
-            public LargeLengthStream(byte[] prefix, long length)
-            {
-                this.prefix = prefix;
-                this.length = length;
-            }
-
-            public override bool CanRead => true;
-
-            public override bool CanSeek => true;
-
-            public override bool CanWrite => false;
-
-            public override long Length => this.length;
-
-            public override long Position
-            {
-                get => this.position;
-                set => this.position = value;
-            }
-
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                int read = (int)Math.Max(0, Math.Min(count, this.length - this.position));
-                for (int i = 0; i < read; i++)
-                {
-                    long source = this.position + i;
-                    buffer[offset + i] = source < this.prefix.Length ? this.prefix[source] : (byte)0;
-                }
-
-                this.position += read;
-                return read;
-            }
-
-            public override long Seek(long offset, SeekOrigin origin)
-            {
-                this.position = origin switch
-                {
-                    SeekOrigin.Begin => offset,
-                    SeekOrigin.Current => this.position + offset,
-                    _ => this.length + offset
-                };
-
-                return this.position;
-            }
-
-            public override void Flush()
-            {
-            }
-
-            public override void SetLength(long value) => throw new NotSupportedException();
-
-            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        }
-
         private sealed class BigTiffBuilder
         {
             private const int HeaderSize = 16;
@@ -318,7 +252,7 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
                 this.entries.Add(new Entry(273, ExifDataType.Long8, _ => 1, null, null, layout => layout.PixelOffset));
                 this.AddShort(277, 1);
                 this.AddShort(278, 1);
-                this.AddInline(279, ExifDataType.Long8, 1, this.Encode(1UL));
+                this.AddInline(279, ExifDataType.Long8, 1, this.EncodeUInt64(1UL));
                 this.AddInline(282, ExifDataType.Rational, 1, this.EncodeRational(72, 1));
                 this.AddInline(283, ExifDataType.Rational, 1, this.EncodeRational(72, 1));
                 this.AddShort(296, 2);
@@ -394,19 +328,11 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             private void AddShort(ushort tag, ushort value)
             {
                 byte[] encoded = new byte[2];
-                if (this.bigEndian)
-                {
-                    BinaryPrimitives.WriteUInt16BigEndian(encoded, value);
-                }
-                else
-                {
-                    BinaryPrimitives.WriteUInt16LittleEndian(encoded, value);
-                }
-
+                this.WriteUInt16(encoded, 0, value);
                 this.AddInline(tag, ExifDataType.Short, 1, encoded);
             }
 
-            private byte[] Encode(ulong value)
+            private byte[] EncodeUInt64(ulong value)
             {
                 byte[] encoded = new byte[8];
                 this.WriteUInt64(encoded, 0, value);

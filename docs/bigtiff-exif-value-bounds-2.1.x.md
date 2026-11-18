@@ -4,10 +4,13 @@ This covers both IFD entry readers in `BaseExifReader`
 (src/ImageSharp/Metadata/Profiles/Exif/ExifReader.cs): `ReadValue64` (BigTIFF) and `ReadValue`
 (classic TIFF and every embedded EXIF profile: JPEG APP1, PNG eXIf, WebP EXIF).
 
-## Problem
+Line numbers below refer to ExifReader.cs at the PR base, ab20465da.
 
-`BaseExifReader.ReadValue64` (src/ImageSharp/Metadata/Profiles/Exif/ExifReader.cs, lines 477-488 at 14efb84e8)
-validates an out-of-line BigTIFF entry value with:
+## BigTIFF (ReadValue64)
+
+### Problem
+
+`BaseExifReader.ReadValue64` (lines 485-489) validates an out-of-line BigTIFF entry value with:
 
 ```csharp
 ulong size = numberOfComponents * ExifDataTypes.GetSize(dataType);
@@ -21,9 +24,10 @@ if (size > 8)
    `ulong.MaxValue`, so any small offset passes and the entry is queued in `BigValues`.
    `newOffset > ulong.MaxValue` is always false.
 2. `ReadBigValues` (lines 126-168) then computes `maxSize` from `(int)size` and calls
-   `this.allocator.Allocate<byte>(maxSize)`. A 233-byte file therefore requests up to 1 GiB
-   (the default single-buffer cap); larger sizes raise `InvalidMemoryOperationException`
-   (wrapped in `InvalidImageContentException`), and under memory pressure `OutOfMemoryException`.
+   `this.allocator.Allocate<byte>(maxSize)`. A file of a few hundred bytes can therefore request
+   up to 1 GiB (the default single-buffer cap); larger sizes raise
+   `InvalidMemoryOperationException` (wrapped in `InvalidImageContentException`), and under memory
+   pressure `OutOfMemoryException`.
 3. The only size check before the `(int)size` casts is a `DebugGuard` (line 137), compiled out of
    Release. A size of `2^31` casts to `int.MinValue`, giving `Allocate<byte>(0)` and an
    `ArgumentOutOfRangeException` from `Span.Slice`. A size of `2^32 + 16` casts to 16 and a
@@ -35,7 +39,7 @@ if (size > 8)
 
 Reachable through public `Image.Identify` and `Image.Load` for any BigTIFF input.
 
-## Invariant
+### Invariant
 
 Immediately before `this.BigValues.Add(...)` in `ReadValue64`:
 
@@ -50,7 +54,7 @@ newOffset + size <= data.Length                (evaluated as newOffset <= data.L
 So every queued value lies entirely within the stream, `(int)size` in `ReadBigValues` is exact
 and non-negative, and the buffer `ReadBigValues` requests is never larger than the stream.
 
-## Change (ReadValue64 only)
+### Change
 
 ```csharp
 ulong elementSize = ExifDataTypes.GetSize(dataType);
@@ -91,7 +95,7 @@ Malformed entries use the existing behaviour: the tag is added to `InvalidTags` 
 
 ### Problem
 
-`BaseExifReader.ReadValue` (lines 401-413 at c01f126e4) is the 32-bit twin of `ReadValue64`:
+`BaseExifReader.ReadValue` (lines 409-415) is the 32-bit twin of `ReadValue64`:
 
 ```csharp
 uint size = numberOfComponents * ExifDataTypes.GetSize(dataType);
@@ -113,16 +117,16 @@ if (size > 4)
    reads 8 bytes from the stream for an entry that declared 4 GiB.
 
 No large allocation happens on this path (a wrapped entry's size is negative after the `(int)`
-cast, and an entry whose sum did not wrap is bounded by the stream length), so the impact is an unhandled
-`ArgumentOutOfRangeException` from public `Image.Identify` / `Image.Load` plus silently misread
-values. Reached through:
+cast, and an entry whose sum did not wrap is bounded by the stream length), so the impact is an
+unhandled `ArgumentOutOfRangeException` from public `Image.Identify` / `Image.Load` plus silently
+misread values. Reached through:
 
-- Classic TIFF: `Image.Identify` and `Image.Load` (135-byte reproducer).
+- Classic TIFF: `Image.Identify` and `Image.Load`.
 - JPEG APP1 EXIF: `Image.Identify` parses the profile eagerly when there is EXIF but no JFIF
   (`JpegDecoderCore.InitDerivedMetadataProperties` -> `GetExifResolutionValue` ->
-  `ExifProfile.GetValue`), with a null allocator, so the same exception escapes `Identify` for a
-  188-byte file. PNG eXIf and WebP EXIF construct `ExifProfile` from the same bytes and parse them
-  with the same `ExifReader` on first access.
+  `ExifProfile.GetValue`), with a null allocator, so the same exception escapes `Identify`.
+  PNG eXIf and WebP EXIF construct `ExifProfile` from the same bytes and parse them with the same
+  `ExifReader` on first access.
 
 ### Invariant
 
@@ -138,11 +142,12 @@ newOffset + size <= data.Length                (computed in 64 bits; both terms 
 ```
 
 This is the invariant `ReadValue64` establishes (`size <= data.Length` follows from the last
-line), plus the existing classic-TIFF limit on the offset, so every queued value from either reader lies inside the stream and `(int)size` in
-`ReadBigValues` is exact and non-negative. On the inline branch `size <= 4` is exact, so the
-`(int)size` slice of the 4-byte offset field is always in range.
+line), plus the existing classic-TIFF limit on the offset, so every queued value from either
+reader lies inside the stream and `(int)size` in `ReadBigValues` is exact and non-negative. On the
+inline branch `size <= 4` is exact, so the `(int)size` slice of the 4-byte offset field is always
+in range.
 
-### Change (ReadValue only)
+### Change
 
 ```csharp
 ulong size = (ulong)numberOfComponents * ExifDataTypes.GetSize(dataType);
@@ -184,46 +189,56 @@ Malformed entries use the existing behaviour (`InvalidTags`, tag dropped, decodi
 
 ## Tests
 
+`BoundedRecordingAllocator` (records every request in bytes and throws for any request above
+1 MiB, so an unfixed build cannot allocate large buffers during the tests) and `LargeLengthStream`
+(a seekable stream that reports a given length and returns zeros past the in-memory bytes) are
+shared test utilities in `tests/ImageSharp.Tests/TestUtilities/`. The TIFF tests use both.
+
+The "Before" column of each table was measured with the production change of that step reverted
+and the other step's change kept, with the new test files added. Every failure listed is the
+named test failing for the stated reason.
+
 ### BigTIFF (ReadValue64)
 
 New file `tests/ImageSharp.Tests/Formats/Tiff/BigTiffMetadataBoundsTests.cs`. BigTIFF bytes
-(1x1, 8-bit grayscale, uncompressed) are built in-test. Every test uses a `Configuration` whose
-allocator records each request and throws for any request above 1 MiB, so an unfixed build
-cannot allocate large buffers during the tests.
+(1x1, 8-bit grayscale, uncompressed, inline `Software` "BigTIFF") are built in-test and read with
+`BoundedRecordingAllocator`.
 
-Unless noted, each test calls `Image.Identify` (asserts 1x1) and `Image.Load`, then asserts on
-`image.Frames.RootFrame.Metadata.ExifProfile` that the malformed tag is absent from `Values`, is
-listed in `InvalidTags`, that the valid inline `Software` tag is still present, and that no
-allocator request was as large as the stream. In 2.1.x TIFF `Identify` does not expose the EXIF profile,
-so the profile assertions use `Load`.
+Every test calls `Image.Identify` (asserts 1x1) and `Image.Load` and asserts that no allocator
+request was as large as the input bytes. Each `_IsDropped` test writes the malformed entry
+followed by a valid out-of-line `Artist`, then asserts on
+`image.Frames.RootFrame.Metadata.ExifProfile` that the malformed tag is absent from `Values` and
+listed in `InvalidTags`, and that the inline `Software` and the out-of-line `Artist` are still
+read. In 2.1.x TIFF `Identify` does not expose the EXIF profile, so the profile assertions use
+`Load`.
 
-| Test | Cases | Observed at base commit (fix reverted in a copy) |
-|---|---|---|
-| ValidMetadata_IsRead | LE, BE | Pass. Also asserts inline XResolution via Identify and inline Software, external ImageDescription and Artist via Load |
-| ValidExternalValueEndingAtEndOfStream_IsRead | offset + size == length | Pass |
-| ValueEndingOneBytePastEndOfStream_IsDropped | offset + size == length + 1 | Pass |
-| ValueOneByteLargerThanStream_IsDroppedWithoutAllocating | size == length + 1, offset 16 | Fail: tag not in InvalidTags (queued, then a short read) |
-| ValueLargerThanStream_IsDroppedWithoutAllocating | 256 MiB, 1 GiB (LE, BE), int.MaxValue | Fail: allocator request of 256 MiB / 1 GiB / int.MaxValue bytes |
-| | int.MaxValue + 1 (LE, BE), ulong.MaxValue | Fail: ArgumentOutOfRangeException |
-| | 2^32 + 16 | Fail: tag present (16-byte misread) |
-| ValueLargerThanIntMaxValueInsideLargeStream_IsDropped | 2^31, 2^32 + 2^31 with a seekable stream reporting 8 GiB | Fail: ArgumentOutOfRangeException |
-| | 2^32 + 16 | Fail: tag present |
-| OffsetOutsideStream_IsDropped | offset ulong.MaxValue size 9; ulong.MaxValue - 4 size 16; long.MaxValue size 16 | Pass |
-| OffsetAtEndOfStream_IsDropped | offset == length, size 9 | Pass |
-| ComponentCountOverflow_IsDropped | Rational 2^61 + 1, 2^61 + 2, 2^61; Short 2^63 + 1; Long 2^62 + 1, 2^62 + 4 | Fail: tag present (all six) |
+| Test | Cases | Before (ReadValue64 change reverted) | With fix |
+|---|---|---|---|
+| ValidMetadata_IsRead | LE, BE | Pass. Also asserts inline XResolution via Identify and inline Software, external ImageDescription and Artist via Load | Pass |
+| ValidExternalValueEndingAtEndOfStream_IsRead | offset + size == length | Pass | Pass |
+| ValueEndingOneBytePastEndOfStream_IsDropped | offset + size == length + 1 | Pass | Pass |
+| ValueOneByteLargerThanStream_IsDropped | size == length + 1, offset 16 | Fail: tag not in InvalidTags (queued, then a short read) | Pass |
+| ValueLargerThanStream_IsDropped | 256 MiB, 1 GiB (LE, BE), int.MaxValue | Fail: allocator request of 256 MiB / 1 GiB / int.MaxValue bytes | Pass |
+| | int.MaxValue + 1 (LE, BE), ulong.MaxValue | Fail: ArgumentOutOfRangeException | Pass |
+| | 2^32 + 16 | Fail: tag present (16-byte misread) | Pass |
+| ValueLargerThanIntMaxValueInsideLargeStream_IsDropped | 2^31, 2^32 + 2^31 with a seekable stream reporting 8 GiB | Fail: ArgumentOutOfRangeException | Pass |
+| | 2^32 + 16 | Fail: tag present | Pass |
+| OffsetOutsideStream_IsDropped | offset ulong.MaxValue size 9; ulong.MaxValue - 4 size 16; long.MaxValue size 16 | Pass | Pass |
+| OffsetAtEndOfStream_IsDropped | offset == length, size 9 | Pass | Pass |
+| ComponentCountOverflow_IsDropped | Rational 2^61 + 1, 2^61 + 2, 2^61; Short 2^63 + 1; Long 2^62 + 1, 2^62 + 4 | Fail (6/6): tag present | Pass |
 
-Totals: 26 cases; at base 18 fail and 8 pass; with the fix 26 pass. The ComponentCountOverflow
-case `Rational 2^61` wraps to size 0; at base it takes the inline branch and is added to `Values`
-even though no value bytes were decoded.
+Totals: 26 cases; before 18 fail and 8 pass; with the fix 26 pass. The ComponentCountOverflow
+case `Rational 2^61` wraps to size 0; before the fix it takes the inline branch and is added to
+`Values` even though no value bytes were decoded.
 
 ### Classic TIFF and embedded EXIF (ReadValue)
 
 New file `tests/ImageSharp.Tests/Formats/Tiff/TiffMetadataBoundsTests.cs`. Classic TIFF bytes
 (1x1, 8-bit grayscale, uncompressed, external XResolution/YResolution, inline 4-byte `Software`
-"TIF") are built in-test and read with the same recording allocator (throws above 1 MiB). The
-malformed-entry tests assert, after `Identify` (1x1) and `Load`, that the tag is absent from
-`Values`, listed in `InvalidTags`, the inline `Software` and the out-of-line `XResolution` are
-still present, and no allocator request was as large as the stream.
+"TIF") are built in-test and read with `BoundedRecordingAllocator`. The malformed-entry tests
+assert, after `Identify` (1x1) and `Load`, that the tag is absent from `Values`, listed in
+`InvalidTags`, the inline `Software` and the out-of-line `XResolution` are still present, and no
+allocator request was as large as the input bytes.
 
 New file `tests/ImageSharp.Tests/Metadata/Profiles/Exif/ExifValueBoundsTests.cs` covers embedded
 EXIF: a minimal grayscale baseline JPEG (SOI, APP1 "Exif\0\0" + TIFF header/IFD, DQT, SOF0, two
@@ -233,9 +248,7 @@ which 2.1.x exposes for JPEG from both), and raw payloads through the public
 inline `Software` "JPG" before the entry under test and, in the malformed-entry tests, a valid
 out-of-line `Artist` after it; both must still be read.
 
-Base = c01f126e4 (BigTIFF fix present, `ReadValue` unchanged) with the new test files added.
-
-| Test | Cases | Observed at base | With fix |
+| Test | Cases | Before (ReadValue change reverted) | With fix |
 |---|---|---|---|
 | ValidMetadata_IsRead | LE, BE: inline Software (4 bytes), inline PageNumber Short x2 (4 bytes), external ImageDescription, Artist, X/YResolution | Pass | Pass |
 | ValidExternalValueEndingAtEndOfStream_IsRead | offset + size == length | Pass | Pass |
@@ -247,22 +260,27 @@ Base = c01f126e4 (BigTIFF fix present, `ReadValue` unchanged) with the new test 
 | ValueOutsideStream_IsDropped | Ascii 0x80000000 @ 16; 0xFFFFFFFF @ 0; 5 @ 0xFFFFFFFF; 5 @ 0x80000000 | Pass | Pass |
 | ValueLargerThanIntMaxValueInsideLargeStream_IsDropped | stream reporting 8 GiB, offset 16: Ascii 2^31, 2^32 - 1; Short 2^30; Long 2^30 - 1; Rational 2^28; Double 2^29 - 1 | Fail (6/6): ArgumentOutOfRangeException | Pass |
 | ValueBeyondIntMaxValueOffsetInsideLargeStream_IsDropped | stream reporting 8 GiB, Ascii 8 @ 0x80000000 (pins the unchanged offset limit) | Pass | Pass |
-| ComponentCountOverflow_IsDropped | Long 0x40000001 (wraps to 4), 0x40000002 (8); Short 0x80000002 (4), 0x80000004 (8); Rational 0x20000000 (0), 0x20000001 (8); Double 0x20000000 (0), 0x20000002 (16) | Fail (8/8): tag present / not in InvalidTags | Pass |
+| ComponentCountOverflow_IsDropped | Long 0x40000001 (wraps to 4), 0x40000002 (8); Short 0x80000002 (4), 0x80000004 (8); Rational 0x20000000 (0), 0x20000001 (8); Double 0x20000000 (0), 0x20000002 (16) | Fail (8/8): tag present | Pass |
 | JpegExifValueWrappingPastEndOfData_IsDropped | JPEG, Ascii 0xFFFFFFF0 @ 16, LE and BE; Identify and Load | Fail (2/2): ArgumentOutOfRangeException from Identify | Pass |
 | JpegExifValidExternalValue_IsRead | JPEG, external ImageDescription; Identify and Load | Pass | Pass |
 | ExternalValueEndingAtEndOfData_IsRead | ExifProfile, value ends at last byte | Pass | Pass |
 | ExternalValueEndingOneBytePastEndOfData_IsDropped | ExifProfile, offset + size == length + 1 | Pass | Pass |
-| MalformedExternalValue_IsDropped | ExifProfile: Ascii 0xFFFFFFF0 @ 16, 0x80000001 @ 0x7FFFFFFF; Short 0x7FFFFFF8, Long 0x3FFFFFFC, Rational 0x1FFFFFFE @ 16; Long 0x40000001, 0x40000002; Rational 0x20000000, 0x20000001 | Fail (9/9) | Pass |
+| MalformedExternalValue_IsDropped | ExifProfile: Ascii 0xFFFFFFF0 @ 16, 0x80000001 @ 0x7FFFFFFF; Short 0x7FFFFFF8, Long 0x3FFFFFFC, Rational 0x1FFFFFFE @ 16 | Fail (5/5): ArgumentOutOfRangeException | Pass |
+| | ExifProfile: Long 0x40000001, 0x40000002; Rational 0x20000000, 0x20000001 | Fail (4/4): tag present | Pass |
 | | ExifProfile: Ascii 0x80000000 @ 16 (no wrap); Ascii 0x7FFFFFFF @ 0x80000001; Long 0x1FFFFFFF @ 0x80000004 | Pass | Pass |
 
-Totals: 53 cases (36 TIFF, 17 EXIF); at base 33 fail and 20 pass; with the fix 53 pass. The 26
+Totals: 53 cases (36 TIFF, 17 EXIF); before 33 fail and 20 pass; with the fix 53 pass. The 26
 BigTIFF cases above still pass.
+
+With both changes reverted (ExifReader.cs as at ab20465da), the 79 cases give 51 failures (the 18
+and 33 above) and 28 passes.
 
 ## Limitations
 
 - A BigTIFF metadata value larger than `int.MaxValue` bytes is rejected even if the stream is
-  that large. `ReadBigValues` reads into a single `int`-indexed span, so it could not be read anyway.
-  The same holds for classic TIFF, whose largest declarable value is `(2^32 - 1) * 8` bytes.
+  that large. `ReadBigValues` reads into a single `int`-indexed span, so it could not be read
+  anyway. The same holds for classic TIFF, whose largest declarable value is `(2^32 - 1) * 8`
+  bytes.
 - Classic TIFF and embedded EXIF still reject an out-of-line value whose offset is above
   `int.MaxValue`, even inside a larger stream. That limit predates this change and is kept.
 - Values up to `min(stream length, int.MaxValue)` are still accepted and allocated as one buffer,
@@ -271,15 +289,18 @@ BigTIFF cases above still pass.
 - Classic TIFF and embedded EXIF (`ReadValue`) were assessed after the BigTIFF change: the same
   wrap existed there and is fixed above. No large allocation was reachable on that path; the
   impact was an unhandled `ArgumentOutOfRangeException` and misread values.
-- `ReadValues64` iterates a file-controlled `ulong` entry count; past end of stream each iteration
-  returns immediately but the loop continues. That is a CPU concern, not part of this change.
 
 ## Verification
 
 - `dotnet build src/ImageSharp/ImageSharp.csproj -c Release` for all target frameworks, with and
   without `SIXLABORS_TESTING_PREVIEW=true`.
-- `SIXLABORS_TESTING_PREVIEW=true DOTNET_ROLL_FORWARD=Major dotnet test tests/ImageSharp.Tests/ImageSharp.Tests.csproj -c Release -f net6.0 --filter "FullyQualifiedName~MetadataBounds|FullyQualifiedName~ValueBounds|FullyQualifiedName~Exif|FullyQualifiedName~Tiff|FullyQualifiedName~Jpeg"`.
+- Tests:
+
+  ```
+  SIXLABORS_TESTING_PREVIEW=true DOTNET_ROLL_FORWARD=Major dotnet test tests/ImageSharp.Tests/ImageSharp.Tests.csproj -c Release -f net6.0 --filter "FullyQualifiedName~MetadataBounds|FullyQualifiedName~ValueBounds|FullyQualifiedName~Exif|FullyQualifiedName~Tiff|FullyQualifiedName~Jpeg"
+  ```
+
   Locally, tests that compare against reference images decoded by Magick.NET fail with
   `DllNotFoundException` for Magick.Native in both the base and fixed trees; they are unrelated.
-- Run the new test files against a copy of the tree with the relevant ExifReader change reverted to
-  confirm the expected base-commit results above.
+- Run the new test files against a copy of the tree with each step's ExifReader change reverted,
+  and with both reverted, to confirm the "Before" results above.

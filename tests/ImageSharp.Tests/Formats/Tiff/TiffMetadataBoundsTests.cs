@@ -2,15 +2,14 @@
 // Licensed under the Apache License, Version 2.0.
 
 using System;
-using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Text;
 using SixLabors.ImageSharp.Memory;
 using SixLabors.ImageSharp.Metadata.Profiles.Exif;
+using SixLabors.ImageSharp.Tests.TestUtilities;
 using Xunit;
 
 namespace SixLabors.ImageSharp.Tests.Formats.Tiff
@@ -83,6 +82,7 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             ExifProfile profile = image.Frames.RootFrame.Metadata.ExifProfile;
             Assert.Equal("TIFF metadata bounds", profile.GetValue(ExifTag.ImageDescription).Value);
             Assert.Empty(profile.InvalidTags);
+            Assert.All(allocator.RequestedBytes, bytes => Assert.True(bytes < data.Length));
         }
 
         [Fact]
@@ -265,91 +265,6 @@ namespace SixLabors.ImageSharp.Tests.Formats.Tiff
             Configuration configuration = Configuration.Default.Clone();
             configuration.MemoryAllocator = allocator;
             return configuration;
-        }
-
-        private sealed class BoundedRecordingAllocator : MemoryAllocator
-        {
-            private const int MaxRequestBytes = 1024 * 1024;
-
-            private readonly MemoryAllocator inner = new SimpleGcMemoryAllocator();
-
-            public List<long> RequestedBytes { get; } = new();
-
-            public override IMemoryOwner<T> Allocate<T>(int length, AllocationOptions options = AllocationOptions.None)
-            {
-                long bytes = (long)length * Unsafe.SizeOf<T>();
-                this.RequestedBytes.Add(bytes);
-                if (bytes > MaxRequestBytes)
-                {
-                    throw new InvalidOperationException($"Allocation request of {bytes} bytes exceeds the test limit of {MaxRequestBytes} bytes.");
-                }
-
-                return this.inner.Allocate<T>(length, options);
-            }
-
-            protected internal override int GetBufferCapacityInBytes() => MaxRequestBytes;
-        }
-
-        private sealed class LargeLengthStream : Stream
-        {
-            private readonly byte[] prefix;
-
-            private readonly long length;
-
-            private long position;
-
-            public LargeLengthStream(byte[] prefix, long length)
-            {
-                this.prefix = prefix;
-                this.length = length;
-            }
-
-            public override bool CanRead => true;
-
-            public override bool CanSeek => true;
-
-            public override bool CanWrite => false;
-
-            public override long Length => this.length;
-
-            public override long Position
-            {
-                get => this.position;
-                set => this.position = value;
-            }
-
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                int read = (int)Math.Max(0, Math.Min(count, this.length - this.position));
-                for (int i = 0; i < read; i++)
-                {
-                    long source = this.position + i;
-                    buffer[offset + i] = source < this.prefix.Length ? this.prefix[source] : (byte)0;
-                }
-
-                this.position += read;
-                return read;
-            }
-
-            public override long Seek(long offset, SeekOrigin origin)
-            {
-                this.position = origin switch
-                {
-                    SeekOrigin.Begin => offset,
-                    SeekOrigin.Current => this.position + offset,
-                    _ => this.length + offset
-                };
-
-                return this.position;
-            }
-
-            public override void Flush()
-            {
-            }
-
-            public override void SetLength(long value) => throw new NotSupportedException();
-
-            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         }
 
         private sealed class ClassicTiffBuilder
