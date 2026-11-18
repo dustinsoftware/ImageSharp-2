@@ -406,13 +406,13 @@ namespace SixLabors.ImageSharp.Metadata.Profiles.Exif
                 return;
             }
 
-            uint size = numberOfComponents * ExifDataTypes.GetSize(dataType);
+            ulong size = (ulong)numberOfComponents * ExifDataTypes.GetSize(dataType);
             if (size > 4)
             {
                 uint newOffset = this.ConvertToUInt32(offsetBuffer);
 
                 // Ensure that the new index does not overrun the data.
-                if (newOffset > int.MaxValue || (newOffset + size) > this.data.Length)
+                if (newOffset > int.MaxValue || size > int.MaxValue || newOffset + size > (ulong)this.data.Length)
                 {
                     this.AddInvalidTag(new UnkownExifTag(tag));
                     return;
@@ -482,11 +482,19 @@ namespace SixLabors.ImageSharp.Metadata.Profiles.Exif
                 return;
             }
 
-            ulong size = numberOfComponents * ExifDataTypes.GetSize(dataType);
+            ulong elementSize = ExifDataTypes.GetSize(dataType);
+            if (numberOfComponents > ulong.MaxValue / elementSize)
+            {
+                this.AddInvalidTag(new UnkownExifTag(tag));
+                return;
+            }
+
+            ulong size = numberOfComponents * elementSize;
             if (size > 8)
             {
                 ulong newOffset = this.ConvertToUInt64(offsetBuffer);
-                if (newOffset > ulong.MaxValue || newOffset > ((ulong)this.data.Length - size))
+                ulong length = (ulong)this.data.Length;
+                if (size > int.MaxValue || size > length || newOffset > length - size)
                 {
                     this.AddInvalidTag(new UnkownExifTag(tag));
                     return;
